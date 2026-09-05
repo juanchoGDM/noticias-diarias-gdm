@@ -6,7 +6,6 @@
     "https://medium.com/feed/tag/design",
     "https://medium.com/feed/tag/soccer",
     "https://medium.com/feed/tag/sports-business",
-
     "https://www.reddit.com/r/soccer/.rss",
     "https://www.reddit.com/r/marketing/.rss",
     "https://www.reddit.com/r/technology/.rss",
@@ -14,7 +13,6 @@
     "https://www.reddit.com/r/soccernerd/.rss",
     "https://www.reddit.com/r/StreetwearStartup/.rss",
     "https://www.reddit.com/r/sneakers/.rss",
-
     "https://footballbusinessnetwork.substack.com/feed",
     "https://footballbusiness.substack.com/feed",
     "https://originalfootball.substack.com/feed",
@@ -25,38 +23,26 @@
     "https://footballbenchmark.com/insights/feed/",
     "https://swissramble.substack.com/feed"
   ],
-  "keywords": [
+  "keywords_futbol": [
     "futbol", "fútbol", "football", "soccer",
-
-    "marketing", "marketing deportivo", "sports marketing",
-    "patrocinio", "sponsorship", "patrocinador", "sponsor",
-
-    "negocio del futbol", "football business", "soccer business",
-    "derechos de tv", "tv rights", "broadcasting rights",
-    "traspaso", "fichaje", "transfer", "transfer fee", "transfer window",
-    "valor de mercado", "market value",
-
-    "diseño", "diseno", "design",
-    "camiseta", "camisetas", "jersey", "kit", "kit design", "kit leak",
-    "escudo", "logo", "crest", "rebrand", "rebranding",
-    "guayos", "botines", "boots", "cleats", "sneakers", "streetwear",
-
-    "tecnologia", "tecnología", "technology",
-    "IA", "AI", "inteligencia artificial", "artificial intelligence",
-    "VAR", "analytics", "datos", "data", "big data",
-
-    "cultura futbolera", "football culture", "soccer culture",
-    "hincha", "hinchada", "fan culture", "ultras",
-    "identidad", "identity", "belonging",
-
-    "apuestas", "apuestas deportivas", "betting", "gambling",
-    "casas de apuestas", "betting sponsorship", "problem gambling", "ludopatía",
-
     "Premier League", "Dimayor", "Conmebol", "FIFA", "UEFA",
     "Mundial 2026", "World Cup 2026",
-
-    "Colombia", "Colombian football", "futbol colombiano",
-    "Liga BetPlay", "selección Colombia"
+    "Colombia futbol", "futbol colombiano", "Liga BetPlay", "selección Colombia",
+    "champions league", "la liga", "bundesliga", "serie a"
+  ],
+  "keywords_tema": [
+    "marketing", "marketing deportivo", "sports marketing",
+    "patrocinio", "sponsorship", "sponsor",
+    "negocio del futbol", "football business",
+    "derechos de tv", "tv rights", "broadcasting rights",
+    "traspaso", "fichaje", "transfer", "transfer window",
+    "valor de mercado", "market value",
+    "diseño", "camiseta", "jersey", "kit", "kit leak",
+    "escudo", "logo", "rebranding",
+    "guayos", "botines", "boots", "cleats", "sneakers",
+    "IA", "AI", "inteligencia artificial", "VAR", "analytics", "data",
+    "hincha", "hinchada", "fan culture", "ultras",
+    "apuestas", "betting", "gambling", "ludopatía"
   ],
   "max_articles_per_feed": 10,
   "max_age_hours": 30
