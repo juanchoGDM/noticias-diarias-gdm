@@ -102,32 +102,37 @@ def build_doc_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
     return f"""Tienes esta lista de artículos encontrados hoy (en formato JSON, puede venir en inglés o español):
 
-{articles_json}
-
-Para CADA artículo, genera una línea con un objeto JSON (NDJSON: un objeto por línea, SIN array, SIN comas entre líneas, SIN backticks de markdown) con las claves:
-- "titulo": el título traducido o adaptado al español
-- "descripcion": una descripción corta (1-2 frases) en español
-- "link": el mismo link original, sin modificarlo
-
-Ejemplo de formato de salida (2 líneas de ejemplo):
-{{"titulo": "Ejemplo uno", "descripcion": "Descripción corta.", "link": "https://..."}}
-{{"titulo": "Ejemplo dos", "descripcion": "Descripción corta.", "link": "https://..."}}
-
-Responde SOLO con esas líneas, nada más antes ni después."""
+    {articles_json}
+    
+    Para CADA artículo, genera una línea con un objeto JSON (NDJSON: un objeto por línea, SIN array, SIN comas entre líneas, SIN backticks de markdown) con las claves:
+    - "titulo": el título traducido o adaptado al español
+    - "descripcion": una descripción corta (1-2 frases) en español
+    - "link": el mismo link original, sin modificarlo
+    
+    Ejemplo de formato de salida (2 líneas de ejemplo):
+    {{"titulo": "Ejemplo uno", "descripcion": "Descripción corta.", "link": "https://..."}}
+    {{"titulo": "Ejemplo dos", "descripcion": "Descripción corta.", "link": "https://..."}}
+    
+    Responde SOLO con esas líneas, nada más antes ni después."""
 
 def build_analysis_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
-    return f"""Tienes esta lista de artículos encontrados hoy sobre fútbol, marketing, tecnología y diseño:
+    return f"""Eres el analista editorial de Gol de Mano (GDM), una cuenta de Instagram en español sobre el fútbol como fenómeno de negocio, marketing, diseño y cultura — no de análisis de partidos ni resultados.
 
-{articles_json}
-
-Escribe en español un análisis breve (para leer en 2-3 minutos) que incluya:
-- Temas en común que se repiten entre varias fuentes
-- Tendencias que se puedan identificar
-- Si hay puntos de vista distintos o contradictorios sobre un mismo tema, menciónalos
-- Un cierre corto con lo más destacado del día
-
-Tono natural y directo. No repitas la lista completa de artículos ni sus links, enfócate en el análisis."""
+    Tienes esta lista de artículos encontrados hoy sobre fútbol, marketing, tecnología y diseño:
+    {articles_json}
+    
+    Antes de escribir, aplica este filtro mentalmente: el fútbol es el tema central. Un artículo importa para este análisis solo si el fútbol es el asunto propio de la noticia, o si conecta de forma clara y directa con él — negocio del fútbol (derechos de TV, patrocinios, fichajes, valoraciones de clubes, finanzas, apuestas deportivas como sponsor), marketing o tecnología aplicados al fútbol (campañas de marcas deportivas, IA o datos en clubes/ligas, VAR, analítica), diseño futbolero (camisetas, escudos, rebrands, guayos/botines, streetwear), o cultura e identidad (hinchada, ultras, fenómenos sociales alrededor del deporte). Ignora en tu análisis los artículos de marketing, tecnología o diseño que no tengan ningún vínculo con fútbol o deporte, el análisis táctico o resultados de partidos puros, y el chisme de fichajes sin sustancia que no aporte un ángulo de negocio, cultura o diseño. Ante la duda de si algo conecta con fútbol, inclúyelo — es preferible un ángulo límite que perder algo útil.
+    
+    Con lo que quede después de ese filtro, escribe en español un análisis breve (para leer en 2-3 minutos) que incluya:
+    - Temas en común que se repiten entre varias fuentes
+    - Tendencias que se puedan identificar
+    - Si hay puntos de vista distintos o contradictorios sobre un mismo tema, menciónalos
+    - Un cierre corto con lo más destacado del día
+    
+    Usa español neutro colombiano: nada de voseo rioplatense ("vos", "pensás", "andá"), sin regionalismos argentinos o españoles, sin jerga forzada tipo "parce" o "chimba". Donde sea relevante, señala explícitamente el ángulo de negocio/cultura/diseño detrás de la noticia — no te quedes solo en el titular.
+    
+    Tono natural y directo. No repitas la lista completa de artículos ni sus links, enfócate en el análisis. Si después del filtro no queda nada relevante para GDM, dilo brevemente en vez de forzar un análisis."""
 
 
 def build_doc_text(doc_articles):
