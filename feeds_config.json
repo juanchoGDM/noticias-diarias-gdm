@@ -1,0 +1,24 @@
+{
+  "feeds": [
+    "https://medium.com/feed/tag/futbol",
+    "https://medium.com/feed/tag/marketing",
+    "https://medium.com/feed/tag/technology",
+    "https://medium.com/feed/tag/design",
+    "https://www.reddit.com/r/soccer/.rss",
+    "https://www.reddit.com/r/marketing/.rss",
+    "https://www.reddit.com/r/technology/.rss"
+  ],
+  "keywords": [
+    "futbol",
+    "fútbol",
+    "marketing",
+    "tecnologia",
+    "tecnología",
+    "diseño",
+    "diseno",
+    "IA",
+    "inteligencia artificial"
+  ],
+  "max_articles_per_feed": 10,
+  "max_age_hours": 30
+}
