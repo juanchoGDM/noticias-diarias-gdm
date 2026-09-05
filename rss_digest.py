@@ -84,6 +84,15 @@ def call_claude(prompt, api_key, max_tokens=4000):
     )
 
 
+def clean_json_response(text):
+    text = text.strip()
+    if text.startswith("```"):
+        text = text.split("```")[1]
+        if text.startswith("json"):
+            text = text[4:]
+    return text.strip()
+
+
 def build_doc_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
     return f"""Tienes esta lista de artículos encontrados hoy (en formato JSON, puede venir en inglés o español):
@@ -177,8 +186,8 @@ def main():
         print("Sin artículos hoy.")
         return
 
-    doc_response = call_claude(build_doc_prompt(articles), api_key)
-    doc_articles = json.loads(doc_response)
+    doc_response = call_claude(build_doc_prompt(articles), api_key, max_tokens=8000)
+    doc_articles = json.loads(clean_json_response(doc_response))
     doc_text = build_doc_text(doc_articles)
     clear_and_write_google_doc(doc_text, doc_id, credentials_info)
 
