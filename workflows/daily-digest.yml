@@ -1,0 +1,28 @@
+name: Resumen diario de noticias
+
+on:
+  schedule:
+    # 12:00 UTC = 7:00 AM en Colombia (GMT-5). Ajusta la hora si lo necesitas.
+    - cron: "0 12 * * *"
+  workflow_dispatch: {}  # te permite correrlo manualmente desde la pestaña Actions
+
+jobs:
+  run-digest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clonar repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar script
+        env:
+          GOOGLE_CREDENTIALS: ${{ secrets.GOOGLE_CREDENTIALS }}
+          GOOGLE_DOC_ID: ${{ secrets.GOOGLE_DOC_ID }}
+        run: python rss_digest.py
