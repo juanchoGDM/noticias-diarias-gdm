@@ -84,13 +84,17 @@ def call_claude(prompt, api_key, max_tokens=4000):
     )
 
 
-def clean_json_response(text):
-    text = text.strip()
-    if text.startswith("```"):
-        text = text.split("```")[1]
-        if text.startswith("json"):
-            text = text[4:]
-    return text.strip()
+def parse_ndjson(text):
+    articles = []
+    for line in text.strip().splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            articles.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue  # probablemente la última línea, cortada — la ignoramos
+    return articles
 
 
 def build_doc_prompt(articles):
@@ -99,13 +103,16 @@ def build_doc_prompt(articles):
 
 {articles_json}
 
-Para CADA artículo, genera:
-- "titulo": el título traducido o adaptado al español (natural, no traducción literal forzada)
-- "descripcion": una descripción corta (1-2 frases) en español que explique de qué trata
-- "link": el mismo link que viene en el original, sin modificarlo
+Para CADA artículo, genera una línea con un objeto JSON (NDJSON: un objeto por línea, SIN array, SIN comas entre líneas, SIN backticks de markdown) con las claves:
+- "titulo": el título traducido o adaptado al español
+- "descripcion": una descripción corta (1-2 frases) en español
+- "link": el mismo link original, sin modificarlo
 
-Responde SOLO con un JSON válido: un array de objetos con las claves "titulo", "descripcion", "link". Sin texto adicional antes ni después, sin backticks de markdown."""
+Ejemplo de formato de salida (2 líneas de ejemplo):
+{{"titulo": "Ejemplo uno", "descripcion": "Descripción corta.", "link": "https://..."}}
+{{"titulo": "Ejemplo dos", "descripcion": "Descripción corta.", "link": "https://..."}}
 
+Responde SOLO con esas líneas, nada más antes ni después."""
 
 def build_analysis_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
@@ -187,7 +194,7 @@ def main():
         return
 
     doc_response = call_claude(build_doc_prompt(articles), api_key, max_tokens=8000)
-    doc_articles = json.loads(clean_json_response(doc_response))
+    doc_articles = parse_ndjson(doc_response)
     doc_text = build_doc_text(doc_articles)
     clear_and_write_google_doc(doc_text, doc_id, credentials_info)
 
