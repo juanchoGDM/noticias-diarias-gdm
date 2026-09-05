@@ -24,9 +24,10 @@ def load_config(path="feeds_config.json"):
         return json.load(f)
 
 
-def entry_matches_keywords(entry, keywords):
+def entry_matches_keywords(entry, config):
     text = (entry.get("title", "") + " " + entry.get("summary", "")).lower()
-    return any(kw.lower() in text for kw in keywords)
+    tiene_futbol = any(kw.lower() in text for kw in config["keywords_futbol"])
+    return tiene_futbol
 
 
 def entry_is_recent(entry, max_age_hours):
@@ -48,7 +49,7 @@ def collect_articles(config):
                 break
             if not entry_is_recent(entry, config.get("max_age_hours", 30)):
                 continue
-            if not entry_matches_keywords(entry, config["keywords"]):
+            if not entry_matches_keywords(entry, config):
                 continue
             articles.append(
                 {
