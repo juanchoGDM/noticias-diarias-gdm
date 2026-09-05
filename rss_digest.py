@@ -67,19 +67,30 @@ def build_digest_text(articles):
     return "\n".join(lines)
 
 
-def write_to_google_doc(text, doc_id, credentials_info):
+def clear_and_write_google_doc(text, doc_id, credentials_info):
     creds = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
     service = build("docs", "v1", credentials=creds)
-    # Inserta el texto nuevo al inicio del documento (índice 1),
-    # así el día más reciente siempre queda arriba.
-    requests = [
+
+    doc = service.documents().get(documentId=doc_id).execute()
+    end_index = doc["body"]["content"][-1]["endIndex"]
+
+    requests = []
+    if end_index > 2:  # hay contenido previo que borrar
+        requests.append(
+            {
+                "deleteContentRange": {
+                    "range": {"startIndex": 1, "endIndex": end_index - 1}
+                }
+            }
+        )
+    requests.append(
         {
             "insertText": {
                 "location": {"index": 1},
                 "text": text,
             }
         }
-    ]
+    )
     service.documents().batchUpdate(documentId=doc_id, body={"requests": requests}).execute()
 
 
@@ -91,7 +102,7 @@ def main():
     doc_id = os.environ["GOOGLE_DOC_ID"]
     credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 
-    write_to_google_doc(digest_text, doc_id, credentials_info)
+    clear_and_write_google_doc(digest_text, doc_id, credentials_info)
     print(f"Listo. {len(articles)} artículos agregados al Google Doc.")
 
 
