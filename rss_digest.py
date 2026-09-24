@@ -12,15 +12,15 @@ from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
 from urllib.parse import quote_plus
 
+import anthropic
 import feedparser
-import requests
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/documents"]
-ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL = "claude-sonnet-5"
 USER_AGENT = "Mozilla/5.0 (compatible; GDM-digest/1.0)"
+DOC_BATCH_SIZE = 20  # artículos por llamada a Claude para el Doc
 GOOGLE_NEWS_URL = "https://news.google.com/rss/search?q={}&hl=es-419&gl=CO&ceid=CO:es-419"
 
 
@@ -55,6 +55,23 @@ def google_news_feeds(queries):
     return [GOOGLE_NEWS_URL.format(quote_plus(q)) for q in queries]
 
 
+def fetch_feed(feed_url):
+    """Descarga un feed; si falla con el user agent de navegador, reintenta con
+    el de feedparser. Nunca lanza excepción: devuelve None y avisa."""
+    motivo = "sin entradas"
+    for agent in (USER_AGENT, None):
+        try:
+            parsed = feedparser.parse(feed_url, agent=agent) if agent else feedparser.parse(feed_url)
+        except Exception as e:  # nunca debe tumbar la ejecución
+            motivo = e
+            continue
+        if parsed.entries:
+            return parsed
+        motivo = parsed.get("bozo_exception") or parsed.get("status", "sin entradas")
+    print(f"⚠️  Feed vacío o con error ({motivo}): {feed_url}")
+    return None
+
+
 def collect_articles(config):
     futbol_patterns = compile_keywords(config["keywords_futbol"])
     excluir_patterns = compile_keywords(config.get("keywords_excluir", []))
@@ -68,14 +85,8 @@ def collect_articles(config):
     articles = []
     for feeds, requiere_futbol in feed_groups:
         for feed_url in feeds:
-            try:
-                parsed = feedparser.parse(feed_url, agent=USER_AGENT)
-            except Exception as e:  # nunca debe tumbar la ejecución
-                print(f"⚠️  Error leyendo {feed_url}: {e}")
-                continue
-            if not parsed.entries:
-                motivo = parsed.get("bozo_exception") or parsed.get("status", "sin entradas")
-                print(f"⚠️  Feed vacío o con error ({motivo}): {feed_url}")
+            parsed = fetch_feed(feed_url)
+            if parsed is None:
                 continue
 
             source_name = parsed.feed.get("title", feed_url)
@@ -102,26 +113,35 @@ def collect_articles(config):
     return articles
 
 
-def call_claude(prompt, api_key, max_tokens=4000):
-    response = requests.post(
-        ANTHROPIC_API_URL,
-        headers={
-            "x-api-key": api_key,
-            "anthropic-version": "2023-06-01",
-            "content-type": "application/json",
-        },
-        json={
-            "model": CLAUDE_MODEL,
-            "max_tokens": max_tokens,
-            "messages": [{"role": "user", "content": prompt}],
-        },
-        timeout=120,
+def call_claude(client, prompt, max_tokens=16000, effort=None):
+    # el SDK reintenta errores de red, 429 y 5xx, y espera hasta 10 min por respuesta
+    extra = {"output_config": {"effort": effort}} if effort else {}
+    response = client.messages.create(
+        model=CLAUDE_MODEL,
+        max_tokens=max_tokens,
+        messages=[{"role": "user", "content": prompt}],
+        **extra,
     )
-    response.raise_for_status()
-    data = response.json()
-    return "".join(
-        block.get("text", "") for block in data.get("content", []) if block.get("type") == "text"
-    )
+    if response.stop_reason == "max_tokens":
+        print("⚠️  La respuesta de Claude se cortó por max_tokens.")
+    return "".join(block.text for block in response.content if block.type == "text")
+
+
+def build_doc_articles(client, articles):
+    """Traduce y clasifica los artículos por lotes, para que cada llamada sea
+    corta y un lote que falle no tumbe el resto."""
+    doc_articles = []
+    for i in range(0, len(articles), DOC_BATCH_SIZE):
+        batch = articles[i:i + DOC_BATCH_SIZE]
+        try:
+            response = call_claude(client, build_doc_prompt(batch), effort="low")
+        except anthropic.APIError as e:
+            print(f"⚠️  Falló el lote {i // DOC_BATCH_SIZE + 1} ({len(batch)} artículos): {e}")
+            continue
+        doc_articles.extend(parse_ndjson(response))
+    if articles and not doc_articles:
+        raise RuntimeError("Claude no devolvió ningún artículo para el Doc.")
+    return doc_articles
 
 
 def parse_ndjson(text):
@@ -289,7 +309,7 @@ def main():
     articles = collect_articles(config)
     today = datetime.now().strftime("%Y-%m-%d")
 
-    api_key = os.environ["ANTHROPIC_API_KEY"]
+    client = anthropic.Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"], max_retries=3)
     doc_id = os.environ["GOOGLE_DOC_ID"]
     credentials_info = json.loads(os.environ["GOOGLE_CREDENTIALS"])
     gmail_address = os.environ["GMAIL_ADDRESS"]
@@ -310,14 +330,13 @@ def main():
         print("Sin artículos hoy.")
         return
 
-    doc_response = call_claude(build_doc_prompt(articles), api_key, max_tokens=8000)
-    doc_articles = parse_ndjson(doc_response)
+    doc_articles = build_doc_articles(client, articles)
     doc_text, highlight_ranges = build_doc_text(doc_articles)
     clear_and_write_google_doc(doc_text, doc_id, credentials_info, highlight_ranges)
 
     filtered = select_filtered_articles(doc_articles, articles)
     if filtered:
-        analysis = call_claude(build_analysis_prompt(filtered), api_key)
+        analysis = call_claude(client, build_analysis_prompt(filtered))
     else:
         analysis = "Hoy ningún artículo pasó el filtro de GDM. Igual puedes revisar la lista completa en el Doc."
     send_email(subject, email_body(analysis), gmail_address, gmail_app_password, email_to)
