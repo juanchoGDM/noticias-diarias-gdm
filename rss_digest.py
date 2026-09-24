@@ -1,13 +1,16 @@
 """
 Lee feeds RSS, filtra por palabras clave, usa la API de Claude para traducir/
-describir en español y generar un análisis, actualiza el Google Doc (reemplazo
-total) y envía el análisis por correo.
+describir en español, marcar cuáles pasan el filtro editorial de GDM, actualiza el
+Google Doc (reemplazo total, resaltando los que pasan el filtro) y envía por correo
+el análisis de esos artículos junto con el link del Doc.
 """
 import json
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus
 
 import feedparser
 import requests
@@ -17,6 +20,8 @@ from googleapiclient.discovery import build
 SCOPES = ["https://www.googleapis.com/auth/documents"]
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL = "claude-sonnet-5"
+USER_AGENT = "Mozilla/5.0 (compatible; GDM-digest/1.0)"
+GOOGLE_NEWS_URL = "https://news.google.com/rss/search?q={}&hl=es-419&gl=CO&ceid=CO:es-419"
 
 
 def load_config(path="feeds_config.json"):
@@ -24,10 +29,18 @@ def load_config(path="feeds_config.json"):
         return json.load(f)
 
 
-def entry_matches_keywords(entry, config):
-    text = (entry.get("title", "") + " " + entry.get("summary", "")).lower()
-    tiene_futbol = any(kw.lower() in text for kw in config["keywords_futbol"])
-    return tiene_futbol
+def compile_keywords(keywords):
+    # palabra completa sin distinguir mayúsculas: "kit" no coincide con "kitchen"
+    # ni "NFL" con "influencer"
+    return [re.compile(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", re.IGNORECASE) for kw in keywords]
+
+
+def matches_any(text, patterns):
+    return any(p.search(text) for p in patterns)
+
+
+def entry_text(entry):
+    return entry.get("title", "") + " " + entry.get("summary", "")
 
 
 def entry_is_recent(entry, max_age_hours):
@@ -38,28 +51,54 @@ def entry_is_recent(entry, max_age_hours):
     return published >= cutoff
 
 
+def google_news_feeds(queries):
+    return [GOOGLE_NEWS_URL.format(quote_plus(q)) for q in queries]
+
+
 def collect_articles(config):
+    futbol_patterns = compile_keywords(config["keywords_futbol"])
+    excluir_patterns = compile_keywords(config.get("keywords_excluir", []))
+    # los feeds de fútbol entran sin filtro de palabras; los generales necesitan
+    # al menos una palabra de fútbol. La exclusión aplica a ambos.
+    feed_groups = [
+        (config.get("feeds_futbol", []) + google_news_feeds(config.get("google_news_futbol", [])), False),
+        (config.get("feeds_generales", []), True),
+    ]
+
     articles = []
-    for feed_url in config["feeds"]:
-        parsed = feedparser.parse(feed_url)
-        source_name = parsed.feed.get("title", feed_url)
-        count = 0
-        for entry in parsed.entries:
-            if count >= config.get("max_articles_per_feed", 10):
-                break
-            if not entry_is_recent(entry, config.get("max_age_hours", 30)):
+    for feeds, requiere_futbol in feed_groups:
+        for feed_url in feeds:
+            try:
+                parsed = feedparser.parse(feed_url, agent=USER_AGENT)
+            except Exception as e:  # nunca debe tumbar la ejecución
+                print(f"⚠️  Error leyendo {feed_url}: {e}")
                 continue
-            if not entry_matches_keywords(entry, config):
+            if not parsed.entries:
+                motivo = parsed.get("bozo_exception") or parsed.get("status", "sin entradas")
+                print(f"⚠️  Feed vacío o con error ({motivo}): {feed_url}")
                 continue
-            articles.append(
-                {
-                    "title": entry.get("title", "(sin título)"),
-                    "summary": entry.get("summary", "")[:500],
-                    "link": entry.get("link", ""),
-                    "source": source_name,
-                }
-            )
-            count += 1
+
+            source_name = parsed.feed.get("title", feed_url)
+            count = 0
+            for entry in parsed.entries:
+                if count >= config.get("max_articles_per_feed", 10):
+                    break
+                if not entry_is_recent(entry, config.get("max_age_hours", 30)):
+                    continue
+                text = entry_text(entry)
+                if matches_any(text, excluir_patterns):
+                    continue
+                if requiere_futbol and not matches_any(text, futbol_patterns):
+                    continue
+                articles.append(
+                    {
+                        "title": entry.get("title", "(sin título)"),
+                        "summary": entry.get("summary", "")[:500],
+                        "link": entry.get("link", ""),
+                        "source": source_name,
+                    }
+                )
+                count += 1
     return articles
 
 
@@ -92,39 +131,46 @@ def parse_ndjson(text):
         if not line:
             continue
         try:
-            articles.append(json.loads(line))
+            art = json.loads(line)
         except json.JSONDecodeError:
             continue  # probablemente la última línea, cortada — la ignoramos
+        art["pasa_filtro"] = art.get("pasa_filtro") is True or str(art.get("pasa_filtro")).lower() == "true"
+        articles.append(art)
     return articles
 
 
 def build_doc_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
-    return f"""Tienes esta lista de artículos encontrados hoy (en formato JSON, puede venir en inglés o español):
+    return f"""Eres el editor de Gol de Mano (GDM), una cuenta de Instagram en español sobre el fútbol como fenómeno de negocio, marketing, diseño y cultura — no de análisis de partidos ni resultados.
+
+    Tienes esta lista de artículos encontrados hoy (en formato JSON, puede venir en inglés o español):
 
     {articles_json}
-    
-    Para CADA artículo, genera una línea con un objeto JSON (NDJSON: un objeto por línea, SIN array, SIN comas entre líneas, SIN backticks de markdown) con las claves:
+
+    Para CADA artículo, decide primero si pasa el filtro editorial de GDM: el fútbol es el tema central. Un artículo pasa el filtro solo si el fútbol es el asunto propio de la noticia, o si conecta de forma clara y directa con él — negocio del fútbol (derechos de TV, patrocinios, fichajes, valoraciones de clubes, finanzas, apuestas deportivas como sponsor), marketing o tecnología aplicados al fútbol (campañas de marcas deportivas, IA o datos en clubes/ligas, VAR, analítica), diseño futbolero (camisetas, escudos, rebrands, guayos/botines, streetwear), o cultura e identidad (hinchada, ultras, fenómenos sociales alrededor del deporte). NO pasan: artículos de marketing, tecnología o diseño sin ningún vínculo con fútbol o deporte, fútbol americano (NFL, college football), el análisis táctico o resultados de partidos puros, y el chisme de fichajes sin sustancia que no aporte un ángulo de negocio, cultura o diseño. Ante la duda de si algo conecta con fútbol, márcalo como que pasa — es preferible un ángulo límite que perder algo útil.
+
+    Luego genera una línea con un objeto JSON (NDJSON: un objeto por línea, SIN array, SIN comas entre líneas, SIN backticks de markdown) con las claves:
     - "titulo": el título traducido o adaptado al español
     - "descripcion": una descripción corta (1-2 frases) en español
     - "link": el mismo link original, sin modificarlo
-    
+    - "pasa_filtro": true si pasa el filtro editorial de GDM, false si no
+
+    Usa español neutro colombiano: nada de voseo rioplatense, sin regionalismos argentinos o españoles.
+
     Ejemplo de formato de salida (2 líneas de ejemplo):
-    {{"titulo": "Ejemplo uno", "descripcion": "Descripción corta.", "link": "https://..."}}
-    {{"titulo": "Ejemplo dos", "descripcion": "Descripción corta.", "link": "https://..."}}
-    
+    {{"titulo": "Ejemplo uno", "descripcion": "Descripción corta.", "link": "https://...", "pasa_filtro": true}}
+    {{"titulo": "Ejemplo dos", "descripcion": "Descripción corta.", "link": "https://...", "pasa_filtro": false}}
+
     Responde SOLO con esas líneas, nada más antes ni después."""
 
 def build_analysis_prompt(articles):
     articles_json = json.dumps(articles, ensure_ascii=False, indent=2)
     return f"""Eres el analista editorial de Gol de Mano (GDM), una cuenta de Instagram en español sobre el fútbol como fenómeno de negocio, marketing, diseño y cultura — no de análisis de partidos ni resultados.
 
-    Tienes esta lista de artículos encontrados hoy sobre fútbol, marketing, tecnología y diseño:
+    Estos son los artículos de hoy que ya pasaron el filtro editorial de GDM (fútbol como tema central y sus ramificaciones de negocio, marketing, tecnología, diseño y cultura):
     {articles_json}
-    
-    Antes de escribir, aplica este filtro mentalmente: el fútbol es el tema central. Un artículo importa para este análisis solo si el fútbol es el asunto propio de la noticia, o si conecta de forma clara y directa con él — negocio del fútbol (derechos de TV, patrocinios, fichajes, valoraciones de clubes, finanzas, apuestas deportivas como sponsor), marketing o tecnología aplicados al fútbol (campañas de marcas deportivas, IA o datos en clubes/ligas, VAR, analítica), diseño futbolero (camisetas, escudos, rebrands, guayos/botines, streetwear), o cultura e identidad (hinchada, ultras, fenómenos sociales alrededor del deporte). Ignora en tu análisis los artículos de marketing, tecnología o diseño que no tengan ningún vínculo con fútbol o deporte, el análisis táctico o resultados de partidos puros, y el chisme de fichajes sin sustancia que no aporte un ángulo de negocio, cultura o diseño. Ante la duda de si algo conecta con fútbol, inclúyelo — es preferible un ángulo límite que perder algo útil.
-    
-    Con lo que quede después de ese filtro, escribe en español un análisis breve (para leer en 2-3 minutos) que incluya:
+
+    Con estos artículos, escribe en español un análisis breve (para leer en 2-3 minutos) que incluya:
     - Temas en común que se repiten entre varias fuentes
     - Tendencias que se puedan identificar
     - Si hay puntos de vista distintos o contradictorios sobre un mismo tema, menciónalos
@@ -132,22 +178,42 @@ def build_analysis_prompt(articles):
     
     Usa español neutro colombiano: nada de voseo rioplatense ("vos", "pensás", "andá"), sin regionalismos argentinos o españoles, sin jerga forzada tipo "parce" o "chimba". Donde sea relevante, señala explícitamente el ángulo de negocio/cultura/diseño detrás de la noticia — no te quedes solo en el titular.
     
-    Tono natural y directo. No repitas la lista completa de artículos ni sus links, enfócate en el análisis. Si después del filtro no queda nada relevante para GDM, dilo brevemente en vez de forzar un análisis."""
+    Tono natural y directo. No repitas la lista completa de artículos ni sus links, enfócate en el análisis. Si los artículos son pocos o no tienen mucha relación entre sí, dilo brevemente en vez de forzar conexiones."""
+
+
+HIGHLIGHT_COLOR = {"red": 1.0, "green": 0.93, "blue": 0.55}  # amarillo suave
+
+
+def utf16_len(text):
+    # Google Docs cuenta posiciones en unidades UTF-16 (un emoji ocupa 2)
+    return len(text.encode("utf-16-le")) // 2
 
 
 def build_doc_text(doc_articles):
+    """Devuelve (texto, rangos) — rangos son (inicio, fin) relativos al texto,
+    en unidades UTF-16, de los artículos que pasaron el filtro."""
     today = datetime.now().strftime("%Y-%m-%d")
-    lines = [f"📰 Resumen del {today}\n"]
+    total_filtro = sum(1 for a in doc_articles if a.get("pasa_filtro"))
+
+    text = f"📰 Resumen del {today}\n"
+    if doc_articles:
+        text += f"🟨 Resaltados: {total_filtro} de {len(doc_articles)} artículos pasaron el filtro de GDM y van en el análisis del correo.\n"
+    text += "\n"
     if not doc_articles:
-        lines.append("No se encontraron artículos relevantes hoy.\n")
+        text += "No se encontraron artículos relevantes hoy.\n"
+
+    ranges = []
     for art in doc_articles:
-        lines.append(f"• {art['titulo']}")
-        lines.append(f"  {art['descripcion']}")
-        lines.append(f"  {art['link']}\n")
-    return "\n".join(lines)
+        block = f"• {art.get('titulo', '')}\n  {art.get('descripcion', '')}\n  {art.get('link', '')}"
+        start = utf16_len(text)
+        text += block
+        if art.get("pasa_filtro"):
+            ranges.append((start, start + utf16_len(block)))
+        text += "\n\n"
+    return text, ranges
 
 
-def clear_and_write_google_doc(text, doc_id, credentials_info):
+def clear_and_write_google_doc(text, doc_id, credentials_info, highlight_ranges=()):
     creds = Credentials.from_service_account_info(credentials_info, scopes=SCOPES)
     service = build("docs", "v1", credentials=creds)
 
@@ -160,7 +226,51 @@ def clear_and_write_google_doc(text, doc_id, credentials_info):
             {"deleteContentRange": {"range": {"startIndex": 1, "endIndex": end_index - 1}}}
         )
     requests_batch.append({"insertText": {"location": {"index": 1}, "text": text}})
+
+    # el texto nuevo hereda el formato del que había antes: se limpia el fondo de todo...
+    requests_batch.append(
+        {
+            "updateTextStyle": {
+                "range": {"startIndex": 1, "endIndex": 1 + utf16_len(text)},
+                "textStyle": {},
+                "fields": "backgroundColor",
+            }
+        }
+    )
+    # ...y se resaltan solo los artículos que pasaron el filtro
+    for start, end in highlight_ranges:
+        requests_batch.append(
+            {
+                "updateTextStyle": {
+                    "range": {"startIndex": 1 + start, "endIndex": 1 + end},
+                    "textStyle": {"backgroundColor": {"color": {"rgbColor": HIGHLIGHT_COLOR}}},
+                    "fields": "backgroundColor",
+                }
+            }
+        )
     service.documents().batchUpdate(documentId=doc_id, body={"requests": requests_batch}).execute()
+
+
+def doc_url(doc_id):
+    return f"https://docs.google.com/document/d/{doc_id}/edit"
+
+
+def select_filtered_articles(doc_articles, original_articles):
+    """Devuelve los artículos originales (en su idioma) que pasaron el filtro,
+    para que el análisis trabaje con el texto completo de la fuente."""
+    by_link = {a["link"]: a for a in original_articles}
+    selected = []
+    for art in doc_articles:
+        if not art.get("pasa_filtro"):
+            continue
+        original = by_link.get(art.get("link"))
+        if original:
+            selected.append(original)
+        else:  # el modelo alteró el link: usamos la versión traducida
+            selected.append(
+                {"title": art.get("titulo", ""), "summary": art.get("descripcion", ""), "link": art.get("link", "")}
+            )
+    return selected
 
 
 def send_email(subject, body, gmail_address, gmail_app_password, to_address):
@@ -186,28 +296,36 @@ def main():
     gmail_app_password = os.environ["GMAIL_APP_PASSWORD"]
     email_to = os.environ.get("EMAIL_TO", gmail_address)
 
+    link_doc = doc_url(doc_id)
+    subject = f"Resumen de noticias - {today}"
+
+    def email_body(text):
+        return f"📄 Doc con todas las noticias de hoy (las resaltadas son las del análisis):\n{link_doc}\n\n{text}"
+
     if not articles:
-        doc_text = f"📰 Resumen del {today}\n\nNo se encontraron artículos relevantes hoy.\n"
+        doc_text, _ = build_doc_text([])
         clear_and_write_google_doc(doc_text, doc_id, credentials_info)
-        send_email(
-            f"Resumen de noticias - {today}",
-            "No se encontraron artículos relevantes hoy.",
-            gmail_address,
-            gmail_app_password,
-            email_to,
-        )
+        send_email(subject, email_body("No se encontraron artículos relevantes hoy."),
+                   gmail_address, gmail_app_password, email_to)
         print("Sin artículos hoy.")
         return
 
     doc_response = call_claude(build_doc_prompt(articles), api_key, max_tokens=8000)
     doc_articles = parse_ndjson(doc_response)
-    doc_text = build_doc_text(doc_articles)
-    clear_and_write_google_doc(doc_text, doc_id, credentials_info)
+    doc_text, highlight_ranges = build_doc_text(doc_articles)
+    clear_and_write_google_doc(doc_text, doc_id, credentials_info, highlight_ranges)
 
-    analysis = call_claude(build_analysis_prompt(articles), api_key)
-    send_email(f"Resumen de noticias - {today}", analysis, gmail_address, gmail_app_password, email_to)
+    filtered = select_filtered_articles(doc_articles, articles)
+    if filtered:
+        analysis = call_claude(build_analysis_prompt(filtered), api_key)
+    else:
+        analysis = "Hoy ningún artículo pasó el filtro de GDM. Igual puedes revisar la lista completa en el Doc."
+    send_email(subject, email_body(analysis), gmail_address, gmail_app_password, email_to)
 
-    print(f"Listo. {len(articles)} artículos procesados, documento actualizado y correo enviado.")
+    print(
+        f"Listo. {len(articles)} artículos encontrados, {len(doc_articles)} en el Doc, "
+        f"{len(filtered)} resaltados y enviados al análisis del correo."
+    )
 
 
 if __name__ == "__main__":
