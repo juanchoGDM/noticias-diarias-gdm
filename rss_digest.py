@@ -6,9 +6,11 @@ el análisis de esos artículos junto con el link del Doc.
 """
 import json
 import os
+import re
 import smtplib
 from email.mime.text import MIMEText
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote_plus
 
 import feedparser
 import requests
@@ -18,6 +20,8 @@ from googleapiclient.discovery import build
 SCOPES = ["https://www.googleapis.com/auth/documents"]
 ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 CLAUDE_MODEL = "claude-sonnet-5"
+USER_AGENT = "Mozilla/5.0 (compatible; GDM-digest/1.0)"
+GOOGLE_NEWS_URL = "https://news.google.com/rss/search?q={}&hl=es-419&gl=CO&ceid=CO:es-419"
 
 
 def load_config(path="feeds_config.json"):
@@ -25,12 +29,18 @@ def load_config(path="feeds_config.json"):
         return json.load(f)
 
 
-def entry_matches_keywords(entry, config):
-    text = (entry.get("title", "") + " " + entry.get("summary", "")).lower()
-    tiene_futbol = any(kw.lower() in text for kw in config["keywords_futbol"])
-    # descarta fútbol americano y otros falsos positivos de la palabra "football"
-    excluida = any(kw.lower() in text for kw in config.get("keywords_excluir", []))
-    return tiene_futbol and not excluida
+def compile_keywords(keywords):
+    # palabra completa sin distinguir mayúsculas: "kit" no coincide con "kitchen"
+    # ni "NFL" con "influencer"
+    return [re.compile(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", re.IGNORECASE) for kw in keywords]
+
+
+def matches_any(text, patterns):
+    return any(p.search(text) for p in patterns)
+
+
+def entry_text(entry):
+    return entry.get("title", "") + " " + entry.get("summary", "")
 
 
 def entry_is_recent(entry, max_age_hours):
@@ -41,28 +51,54 @@ def entry_is_recent(entry, max_age_hours):
     return published >= cutoff
 
 
+def google_news_feeds(queries):
+    return [GOOGLE_NEWS_URL.format(quote_plus(q)) for q in queries]
+
+
 def collect_articles(config):
+    futbol_patterns = compile_keywords(config["keywords_futbol"])
+    excluir_patterns = compile_keywords(config.get("keywords_excluir", []))
+    # los feeds de fútbol entran sin filtro de palabras; los generales necesitan
+    # al menos una palabra de fútbol. La exclusión aplica a ambos.
+    feed_groups = [
+        (config.get("feeds_futbol", []) + google_news_feeds(config.get("google_news_futbol", [])), False),
+        (config.get("feeds_generales", []), True),
+    ]
+
     articles = []
-    for feed_url in config["feeds"]:
-        parsed = feedparser.parse(feed_url)
-        source_name = parsed.feed.get("title", feed_url)
-        count = 0
-        for entry in parsed.entries:
-            if count >= config.get("max_articles_per_feed", 10):
-                break
-            if not entry_is_recent(entry, config.get("max_age_hours", 30)):
+    for feeds, requiere_futbol in feed_groups:
+        for feed_url in feeds:
+            try:
+                parsed = feedparser.parse(feed_url, agent=USER_AGENT)
+            except Exception as e:  # nunca debe tumbar la ejecución
+                print(f"⚠️  Error leyendo {feed_url}: {e}")
                 continue
-            if not entry_matches_keywords(entry, config):
+            if not parsed.entries:
+                motivo = parsed.get("bozo_exception") or parsed.get("status", "sin entradas")
+                print(f"⚠️  Feed vacío o con error ({motivo}): {feed_url}")
                 continue
-            articles.append(
-                {
-                    "title": entry.get("title", "(sin título)"),
-                    "summary": entry.get("summary", "")[:500],
-                    "link": entry.get("link", ""),
-                    "source": source_name,
-                }
-            )
-            count += 1
+
+            source_name = parsed.feed.get("title", feed_url)
+            count = 0
+            for entry in parsed.entries:
+                if count >= config.get("max_articles_per_feed", 10):
+                    break
+                if not entry_is_recent(entry, config.get("max_age_hours", 30)):
+                    continue
+                text = entry_text(entry)
+                if matches_any(text, excluir_patterns):
+                    continue
+                if requiere_futbol and not matches_any(text, futbol_patterns):
+                    continue
+                articles.append(
+                    {
+                        "title": entry.get("title", "(sin título)"),
+                        "summary": entry.get("summary", "")[:500],
+                        "link": entry.get("link", ""),
+                        "source": source_name,
+                    }
+                )
+                count += 1
     return articles
 
 
